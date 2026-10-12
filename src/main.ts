@@ -23,6 +23,16 @@ const xblAuth = async () => {
 }
 const jwt = (token: string) => JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString())
 
+// werift ends its offers with a=end-of-candidates, which real clients never send over HTTP signaling,
+// and BDS 1.26.51 answers "26" to it. ponytail: patches the relay's fetch; drop once
+// @nethernet-proxy/relay strips the line in useHttpSignaling.
+const { fetch: originalFetch } = globalThis
+globalThis.fetch = (input, init) => {
+  if (typeof init?.body === 'string' && String(input).startsWith(`${bdsUrl.origin}/v1/join/`))
+    init = { ...init, body: init.body.replace(/^a=end-of-candidates\r?\n/m, '') }
+  return originalFetch(input, init)
+}
+
 // Offers to BDS carry this account's multiplayer token; answers to friends are self-signed by the relay.
 const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'secp384r1' })
 const bdsIdentity: Identity = { privateKey, token: '', domain: 'https://authorization.franchise.minecraft-services.net/' }
