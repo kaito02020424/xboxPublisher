@@ -5,10 +5,10 @@ import { Relay } from '@nethernet-proxy/relay'
 import { SignalStructure, SignalType, type Identity } from 'nethernet'
 import prismarineAuth from 'prismarine-auth'
 import { connectSignaling, type Signaling } from './signaling.ts'
-import { connectRta, SCID, sessionBody, TEMPLATE, xbl, type BdsInfo, type Rta } from './xbox.ts'
+import { acceptFriendRequests, connectRta, SCID, sessionBody, TEMPLATE, xbl, type BdsInfo, type Rta } from './xbox.ts'
 
 const { Authflow, Titles } = prismarineAuth
-const config = JSON.parse(await readFile('config.json', 'utf8')) as { server: string }
+const config = JSON.parse(await readFile('config.json', 'utf8')) as { server: string; autoAcceptFriends?: boolean }
 const bdsUrl = new URL(config.server)
 
 const auth = new Authflow(
@@ -151,6 +151,7 @@ async function update() {
     await xbl(header, `https://userpresence.xboxlive.com/users/xuid(${xuid})/devices/current/titles/current`, 'POST', '{"state":"active"}', '3')
     lastPresence = Date.now()
   }
+  if (config.autoAcceptFriends ?? true) await acceptFriendRequests(header).catch((e) => console.warn('friend requests:', e.message))
 }
 
 for (const event of ['SIGINT', 'SIGTERM'] as const) {

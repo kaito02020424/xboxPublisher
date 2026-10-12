@@ -27,15 +27,24 @@ export interface SessionState {
 export const openWebSocket = (url: string, headers: Record<string, string>) =>
   new WebSocket(url, { headers } as unknown as string[])
 
+/** Xbox Live REST call; pass contract '' to omit x-xbl-contract-version. */
 export async function xbl(auth: string, url: string, method = 'GET', body?: string, contract = '107') {
-  const res = await fetch(url, {
-    method,
-    body,
-    headers: { authorization: auth, 'x-xbl-contract-version': contract, 'content-type': 'application/json' },
-    signal: AbortSignal.timeout(15_000),
-  })
+  const headers: Record<string, string> = { authorization: auth, 'accept-language': 'en-US', 'content-type': 'application/json' }
+  if (contract) headers['x-xbl-contract-version'] = contract
+  const res = await fetch(url, { method, body, headers, signal: AbortSignal.timeout(15_000) })
   if (!res.ok) throw new Error(`${method} ${url} -> ${res.status} ${await res.text()}`)
   return res
+}
+
+/** Accepts every pending friend request, so new friends can see the session. */
+export async function acceptFriendRequests(auth: string) {
+  const url = 'https://peoplehub.xboxlive.com/users/me/people/friendrequests(received)'
+  const { people = [] } = await (await xbl(auth, url, 'GET', undefined, '7')).json()
+  for (const { xuid, gamertag } of people as { xuid: string; gamertag: string }[]) {
+    if (BigInt(xuid) >> 52n === 1n) continue // guest (split-screen) accounts can't be friends
+    await xbl(auth, `https://social.xboxlive.com/users/me/people/friends/v2/xuid(${xuid})`, 'PUT', undefined, '')
+    console.log(`accepted friend request: ${gamertag} (${xuid})`)
+  }
 }
 
 /** MPSD session body, as current Minecraft hosts publish it (JSON-RPC signaling = ConnectionType 7). */
