@@ -11,8 +11,6 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@nethernet-proxy/relay": "0.1.0",
-    "nethernet": "1.1.2",
     "prismarine-auth": "3.1.1"
   },
   "devDependencies": {

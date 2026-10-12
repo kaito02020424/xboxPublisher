@@ -1,5 +1,4 @@
 {
   "server": "http://127.0.0.1:19132",
-  "autoAcceptFriends": true,
-  "mode": "relay"
+  "autoAcceptFriends": true
 }

@@ -1,8 +1,6 @@
-import { generateKeyPairSync, randomBytes, randomUUID, type KeyObject } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { Relay } from '@nethernet-proxy/relay'
-import { SignalStructure, SignalType, type Identity } from 'nethernet'
 import prismarineAuth from 'prismarine-auth'
 import { connectSignaling, type Signaling } from './signaling.ts'
 import { acceptFriendRequests, connectRta, SCID, sessionBody, TEMPLATE, xbl, type BdsInfo, type Rta } from './xbox.ts'
@@ -11,7 +9,6 @@ const { Authflow, Titles } = prismarineAuth
 const config = JSON.parse(await readFile('config.json', 'utf8')) as {
   server: string
   autoAcceptFriends?: boolean
-  mode?: 'relay' | 'signaling'
 }
 const bdsUrl = new URL(config.server)
 
@@ -26,29 +23,6 @@ const xblAuth = async () => {
   return { header: `XBL3.0 x=${token.userHash};${token.XSTSToken}`, xuid: token.userXUID }
 }
 const jwt = (token: string) => JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString())
-
-// werift ends its offers with a=end-of-candidates, which real clients never send over HTTP signaling,
-// and BDS 1.26.51 answers "26" to it. ponytail: patches the relay's fetch; drop once
-// @nethernet-proxy/relay strips the line in useHttpSignaling.
-const { fetch: originalFetch } = globalThis
-globalThis.fetch = (input, init) => {
-  if (typeof init?.body === 'string' && String(input).startsWith(`${bdsUrl.origin}/v1/join/`))
-    init = { ...init, body: init.body.replace(/^a=end-of-candidates\r?\n/m, '') }
-  return originalFetch(input, init)
-}
-
-// Offers to BDS carry this account's multiplayer token; answers to friends are self-signed by the relay.
-const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'secp384r1' })
-const bdsIdentity: Identity = { privateKey, token: '', domain: 'https://authorization.franchise.minecraft-services.net/' }
-const relay = new Relay({
-  serverUrl: bdsUrl,
-  clientSideIdentity: { privateKey, token: '', domain: 'self' },
-  serverSideIdentity: bdsIdentity,
-  log: process.env.DEBUG ? (event, fields) => console.debug(event, fields) : undefined,
-})
-relay.on('sessionReady', (s) => console.log(`joined: ${s.verifiedSignaling?.gamertag} (${s.verifiedSignaling?.xuid})`))
-relay.on('sessionClose', (s, reason) => console.log(`left: ${s.verifiedSignaling?.gamertag ?? s.connectionId} (${reason})`))
-relay.on('signalingRejected', (id, reason) => console.warn(`rejected offer ${id}: ${reason}`))
 
 const sessionName = randomUUID()
 const sessionUrl = `https://sessiondirectory.xboxlive.com/serviceconfigs/${SCID}/sessionTemplates/${TEMPLATE}/sessions/${sessionName}`
@@ -101,67 +75,37 @@ async function syncNonces() {
 
 // Real hosts trickle their candidates after the answer, and some peers only read CANDIDATEADD,
 // so repeat the answer's inline candidates that way too.
-function sendAnswer(from: string, connectionId: bigint, sdp: string) {
-  signaling?.send(from, `${SignalType.ConnectResponse} ${connectionId} ${sdp}`)
-  for (const [, candidate] of sdp.matchAll(/^a=(candidate:.+?)\r?$/gm))
-    signaling?.send(from, `${SignalType.CandidateAdd} ${connectionId} ${candidate}`)
+function sendAnswer(from: string, connectionId: string, sdp: string) {
+  signaling?.send(from, `CONNECTRESPONSE ${connectionId} ${sdp}`)
+  for (const [, candidate] of sdp.matchAll(/^a=(candidate:.+?)\r?$/gm)) signaling?.send(from, `CANDIDATEADD ${connectionId} ${candidate}`)
 }
 
-// mode "signaling": hand the friend's own offer (and identity) to the server and return its answer,
-// so the friend connects to the server directly. Servers that match the signaling identity against
-// the Login (e.g. @nethernet-proxy/proxy) only accept this.
-async function forwardOffer(from: string, signal: SignalStructure) {
-  const res = await fetch(new URL(`/v1/join/${signal.networkId}`, bdsUrl), {
+// Hand the friend's own offer (and identity) to the server and return its answer, so the friend
+// connects to the server directly. HTTP signaling can't trickle, so later CANDIDATEADDs are dropped:
+// the server learns the friend's address from its ICE checks.
+async function forwardOffer(from: string, networkId: string, connectionId: string, offer: string) {
+  const res = await fetch(new URL(`/v1/join/${networkId}`, bdsUrl), {
     method: 'POST',
     headers: { 'content-type': 'application/sdp', 'user-agent': 'libhttpclient/1.0.0.0' },
-    body: signal.data,
+    body: offer,
     signal: AbortSignal.timeout(20_000),
   })
   const body = await res.text()
   if (res.ok && body.startsWith('v=0')) {
-    sendAnswer(from, signal.connectionId, body)
-    console.log(`forwarded join ${signal.connectionId} to ${bdsUrl.host}`)
+    sendAnswer(from, connectionId, body)
+    console.log(`forwarded join ${connectionId} to ${bdsUrl.host}`)
     return
   }
   const code = /^\d+$/.test(body.trim()) ? body.trim() : '18' // SignalingUnknownError
-  signaling?.send(from, `${SignalType.ConnectError} ${signal.connectionId} ${code}`)
-  console.warn(`join ${signal.connectionId} refused by ${bdsUrl.host}: ${res.status} "${body.slice(0, 80)}"`)
+  signaling?.send(from, `CONNECTERROR ${connectionId} ${code}`)
+  console.warn(`join ${connectionId} refused by ${bdsUrl.host}: ${res.status} "${body.slice(0, 80)}"`)
 }
 
-// Friend leg: franchise signals go straight into the relay's NetherNet server.
-const early = new Map<bigint, SignalStructure[]>()
+// Signal strings are "TYPE connectionId data".
 function onSignal(from: string, peerNetherNetId: string, message: string) {
-  const signal = SignalStructure.fromString(message)
-  signal.networkId = BigInt(peerNetherNetId)
-  if (config.mode === 'signaling') {
-    // HTTP signaling can't trickle: the server learns the friend's address from its ICE checks.
-    if (signal.type === SignalType.ConnectRequest) forwardOffer(from, signal).catch((e) => console.warn('forward:', e.message))
-    return
-  }
-  const respond = (reply: SignalStructure) => {
-    // werift reports its candidates before the answer, which already carries them all.
-    if (reply.type === SignalType.ConnectResponse) sendAnswer(from, reply.connectionId, reply.data)
-    else if (reply.type !== SignalType.CandidateAdd) signaling?.send(from, reply.toString())
-  }
-  const endpoint = relay.clientEndpoint
-  const warn = (error: unknown) => console.warn(`signal ${signal.type} ${signal.connectionId}:`, error)
-  if (signal.type === SignalType.ConnectRequest) {
-    // The relay drops candidates that arrive while the offer is still being verified.
-    early.set(signal.connectionId, [])
-    endpoint
-      .handleOffer(signal, respond, signaling?.iceServers)
-      .catch(warn)
-      .finally(() => {
-        for (const c of early.get(signal.connectionId) ?? []) endpoint.handleCandidate(c, respond).catch(warn)
-        early.delete(signal.connectionId)
-      })
-  } else if (signal.type === SignalType.CandidateAdd) {
-    const queue = early.get(signal.connectionId)
-    if (queue) queue.push(signal)
-    else endpoint.handleCandidate(signal, respond).catch(warn)
-  } else if (signal.type === SignalType.ConnectError) {
-    relay.closeSession(signal.connectionId, `connecterror:${signal.data}`).catch(warn)
-  }
+  const [type, connectionId, ...data] = message.split(' ')
+  if (type === 'CONNECTREQUEST' && /^\d+$/.test(connectionId) && /^\d+$/.test(peerNetherNetId))
+    forwardOffer(from, peerNetherNetId, connectionId, data.join(' ')).catch((e) => console.warn('forward:', e.message))
 }
 
 async function update() {
@@ -173,13 +117,6 @@ async function update() {
   }
   const { header, xuid } = await xblAuth()
   const { mcToken } = await auth.getMinecraftBedrockServicesToken({ version: info.version })
-  if (!bdsIdentity.token || jwt(bdsIdentity.token).exp * 1000 - Date.now() < 3_600_000) {
-    const spki = publicKey.export({ type: 'spki', format: 'der' }).toString('base64')
-    // prismarine-auth 3.1.1 types say KeyObject, but the service needs this base64 string.
-    const token = await auth.getMinecraftBedrockMultiplayerToken(spki as unknown as KeyObject, { version: info.version })
-    if (!token) throw new Error('no multiplayer token')
-    bdsIdentity.token = token
-  }
   if (!signaling || signaling.closed) {
     signaling = await connectSignaling(mcToken, netherNetId, onSignal)
     pmsgId = jwt(mcToken.split(' ')[1]).pmid
@@ -213,7 +150,6 @@ for (const event of ['SIGINT', 'SIGTERM'] as const) {
     } catch {}
     rta?.close()
     signaling?.close()
-    await relay.close().catch(() => {})
     process.exit(0)
   })
 }

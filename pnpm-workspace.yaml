@@ -1,2 +1,0 @@
-minimumReleaseAgeExclude:
-  - '@nethernet-proxy/relay@0.1.0'

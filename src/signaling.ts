@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto'
 import { openWebSocket } from './xbox.ts'
 
 export interface Signaling {
-  iceServers: string[]
   /** Send a NetherNet signal string ("CONNECTRESPONSE <id> <sdp>") to a peer's messaging id. */
   send(to: string, message: string): void
   readonly closed: boolean
@@ -45,13 +44,9 @@ export function connectSignaling(mcToken: string, netherNetId: bigint, onSignal:
         // Server requests (pings, deliveries) must be acknowledged or delivery is cancelled.
         if (msg.method && msg.id != null) ws.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: null }))
         if (msg.error) console.warn('signaling error:', JSON.stringify(msg.error))
-        if (msg.result?.TurnAuthServers) {
+        if (msg.result?.TurnAuthServers) { // hosts request TURN credentials once connected
           clearTimeout(timer)
           resolve({
-            // ponytail: STUN only. werift doesn't follow this TURN server's 300 redirect, and its TCP fallback
-            // stalls the answer past the offer timeout; joining clients relay through their own TURN instead.
-            // Resolve the redirect with nethernet's resolveTurnRedirects if host-side relaying is ever needed.
-            iceServers: msg.result.TurnAuthServers.flatMap((s: { Urls: string[] }) => s.Urls).filter((url: string) => /^stuns?:/.test(url)),
             send: (to, message) => sendTo(to, 'Signaling_WebRtc_v1_0', { netherNetId: netherNetId.toString(), message }),
             get closed() {
               return ws.readyState > WebSocket.OPEN
