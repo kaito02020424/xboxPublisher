@@ -8,7 +8,7 @@ Xbox Live にログインし、`config.json` で指定した Bedrock Dedicated S
 ```
 
 - フレンド側は Mojang の franchise signaling (JSON-RPC) で受け付けます。セッションの公開方法は [MCXboxBroadcast](https://github.com/MCXboxBroadcast/Broadcaster) と同じです。
-- フレンドの offer を本人の identity ごとそのまま BDS に渡すので、BDS (や `@nethernet-proxy/proxy` のような前段) にはフレンド本人として届きます。ゲームのデータは xboxPublisher を通りません。
+- フレンドの offer を本人の identity ごとそのまま BDS に渡すので、BDSにはフレンド本人として届きます。ゲームのデータは xboxPublisher を通りません。
 - そのため、BDS の UDP ポートはインターネット (フレンド) から到達できる必要があります。
 
 ## 必要なもの
