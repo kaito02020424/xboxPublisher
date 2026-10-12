@@ -42,8 +42,18 @@ export async function acceptFriendRequests(auth: string) {
   const { people = [] } = await (await xbl(auth, url, 'GET', undefined, '7')).json()
   for (const { xuid, gamertag } of people as { xuid: string; gamertag: string }[]) {
     if (BigInt(xuid) >> 52n === 1n) continue // guest (split-screen) accounts can't be friends
-    await xbl(auth, `https://social.xboxlive.com/users/me/people/friends/v2/xuid(${xuid})`, 'PUT', undefined, '')
-    console.log(`accepted friend request: ${gamertag} (${xuid})`)
+    const friend = `https://social.xboxlive.com/users/me/people/friends/v2/xuid(${xuid})`
+    try {
+      await xbl(auth, friend, 'PUT', undefined, '')
+      console.log(`accepted friend request: ${gamertag} (${xuid})`)
+    } catch (error) {
+      // 1011/1049: their account can't be friended; decline (as MCXboxBroadcast does) so it isn't retried every tick.
+      if (!/"code":\s*10(11|49)\b/.test((error as Error).message)) throw error // 429, 1028 (list full): retry next tick
+      await xbl(auth, friend, 'DELETE', undefined, '').then(
+        () => console.warn(`declined friend request: ${gamertag} (${xuid}) can't be friended`),
+        (e) => console.warn(`could not decline friend request: ${gamertag} (${xuid}):`, e.message),
+      )
+    }
   }
 }
 

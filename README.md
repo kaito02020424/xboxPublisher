@@ -19,7 +19,6 @@ Xbox Live にログインし、`config.json` で指定した Bedrock Dedicated S
   - `enable-lan-visibility=true`。`false` だと `GET /v1/join` が空のボディを返し、バージョンや人数を取得できません。
 - 配信用の Xbox アカウント。サブアカウントを推奨します。
   - セッションはこのアカウントのフレンドに表示され、参加できます。
-  - 参加中のプレイヤーのフレンド (フレンドのフレンド) にも表示されます。
   - 参加者を制限したい場合は、BDS の allowlist を使ってください。
 
 ## 使い方
