@@ -8,7 +8,11 @@ import { connectSignaling, type Signaling } from './signaling.ts'
 import { acceptFriendRequests, connectRta, SCID, sessionBody, TEMPLATE, xbl, type BdsInfo, type Rta } from './xbox.ts'
 
 const { Authflow, Titles } = prismarineAuth
-const config = JSON.parse(await readFile('config.json', 'utf8')) as { server: string; autoAcceptFriends?: boolean }
+const config = JSON.parse(await readFile('config.json', 'utf8')) as {
+  server: string
+  autoAcceptFriends?: boolean
+  mode?: 'relay' | 'signaling'
+}
 const bdsUrl = new URL(config.server)
 
 const auth = new Authflow(
@@ -95,13 +99,49 @@ async function syncNonces() {
   if (changed) await putSession()
 }
 
+// Real hosts trickle their candidates after the answer, and some peers only read CANDIDATEADD,
+// so repeat the answer's inline candidates that way too.
+function sendAnswer(from: string, connectionId: bigint, sdp: string) {
+  signaling?.send(from, `${SignalType.ConnectResponse} ${connectionId} ${sdp}`)
+  for (const [, candidate] of sdp.matchAll(/^a=(candidate:.+?)\r?$/gm))
+    signaling?.send(from, `${SignalType.CandidateAdd} ${connectionId} ${candidate}`)
+}
+
+// mode "signaling": hand the friend's own offer (and identity) to the server and return its answer,
+// so the friend connects to the server directly. Servers that match the signaling identity against
+// the Login (e.g. @nethernet-proxy/proxy) only accept this.
+async function forwardOffer(from: string, signal: SignalStructure) {
+  const res = await fetch(new URL(`/v1/join/${signal.networkId}`, bdsUrl), {
+    method: 'POST',
+    headers: { 'content-type': 'application/sdp', 'user-agent': 'libhttpclient/1.0.0.0' },
+    body: signal.data,
+    signal: AbortSignal.timeout(20_000),
+  })
+  const body = await res.text()
+  if (res.ok && body.startsWith('v=0')) {
+    sendAnswer(from, signal.connectionId, body)
+    console.log(`forwarded join ${signal.connectionId} to ${bdsUrl.host}`)
+    return
+  }
+  const code = /^\d+$/.test(body.trim()) ? body.trim() : '18' // SignalingUnknownError
+  signaling?.send(from, `${SignalType.ConnectError} ${signal.connectionId} ${code}`)
+  console.warn(`join ${signal.connectionId} refused by ${bdsUrl.host}: ${res.status} "${body.slice(0, 80)}"`)
+}
+
 // Friend leg: franchise signals go straight into the relay's NetherNet server.
 const early = new Map<bigint, SignalStructure[]>()
 function onSignal(from: string, peerNetherNetId: string, message: string) {
   const signal = SignalStructure.fromString(message)
   signal.networkId = BigInt(peerNetherNetId)
+  if (config.mode === 'signaling') {
+    // HTTP signaling can't trickle: the server learns the friend's address from its ICE checks.
+    if (signal.type === SignalType.ConnectRequest) forwardOffer(from, signal).catch((e) => console.warn('forward:', e.message))
+    return
+  }
   const respond = (reply: SignalStructure) => {
-    if (reply.type !== SignalType.CandidateAdd) signaling?.send(from, reply.toString()) // werift answers carry every candidate
+    // werift reports its candidates before the answer, which already carries them all.
+    if (reply.type === SignalType.ConnectResponse) sendAnswer(from, reply.connectionId, reply.data)
+    else if (reply.type !== SignalType.CandidateAdd) signaling?.send(from, reply.toString())
   }
   const endpoint = relay.clientEndpoint
   const warn = (error: unknown) => console.warn(`signal ${signal.type} ${signal.connectionId}:`, error)
