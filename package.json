@@ -1,0 +1,38 @@
+{
+  "name": "xbox-publisher",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Advertise a NetherNet BDS to Xbox Live friends and proxy their joins",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "start": "node src/main.ts",
+    "check": "tsc",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@nethernet-proxy/relay": "0.1.0",
+    "nethernet": "1.1.2",
+    "prismarine-auth": "3.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": "^26.0.0"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.9.1",
+      "onFail": "download"
+    },
+    "runtime": {
+      "name": "node",
+      "version": "26.10.0",
+      "onFail": "download"
+    }
+  },
+  "packageManager": "pnpm@12.9.1"
+}
